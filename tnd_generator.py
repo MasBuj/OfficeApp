@@ -519,8 +519,17 @@ if menu == "Surat Pengantar":
 
             preview_path = os.path.join(os.getcwd(), "preview_sementara.docx")
             doc.save(preview_path)
-            os.startfile(preview_path)
-            st.success("File Word berhasil dirakit dan terbuka otomatis di layar Anda.")
+
+            # Streamlit Download Button instead of os.startfile
+            with open(preview_path, "rb") as docx_file:
+                st.download_button(
+                    label="📥 Download Naskah Dinas",
+                    data=docx_file,
+                    file_name="Surat_Pengantar_TND.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+
+            st.success("✅ Naskah Dinas berhasil dibuat! Silakan klik tombol di atas untuk mengunduh.")
 
 elif menu == "Laporan (Coming Soon)":
     st.title("Generator Laporan")

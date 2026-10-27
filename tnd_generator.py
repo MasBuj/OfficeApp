@@ -219,8 +219,8 @@ def add_body_paragraphs(doc, context):
 def add_closing_and_signature(doc, context):
     # Determine indent for the first line ONLY
     is_plt_plh = context['jabatan_ttd'].startswith("Plt.") or context['jabatan_ttd'].startswith("Plh.")
-    jabatan_indent = Cm(7.25) if is_plt_plh else Cm(8.0)
-    base_indent = Cm(8.0)  # Always 8.0 for everything below the title
+    jabatan_indent = Cm(9.25) if is_plt_plh else Cm(10.0)
+    base_indent = Cm(10.0)  # Always 10.0 for everything below the title
 
     # 1-line gap before signature block
     p_gap_sig = doc.add_paragraph()

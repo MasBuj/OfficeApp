@@ -1,5 +1,6 @@
 import os
 import datetime
+import pandas as pd
 
 import streamlit as st
 import docx
@@ -10,12 +11,31 @@ from docx.oxml.ns import qn
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
 
 
-def format_tgl_indo(date_obj, include_year=True):
-    bulan = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
-             "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
-    if include_year:
-        return f"{date_obj.day} {bulan[date_obj.month]} {date_obj.year}"
-    return f"{date_obj.day} {bulan[date_obj.month]}"
+def format_tgl_indo(date_obj, is_draft=False, include_year=True):
+    months = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+              "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+    if is_draft:
+        return f"{months[date_obj.month]} {date_obj.year}" if include_year else f"{months[date_obj.month]}"
+    else:
+        return f"{date_obj.day} {months[date_obj.month]} {date_obj.year}" if include_year else f"{date_obj.day} {months[date_obj.month]}"
+
+convert_date_to_indonesian = format_tgl_indo
+
+
+def set_document_margins(doc):
+    # Global font: Arial 12
+    style = doc.styles["Normal"]
+    style.font.name = "Arial"
+    style.font.size = Pt(12)
+
+    # Page setup: A4 + margins
+    for section in doc.sections:
+        section.page_width = Cm(21.0)
+        section.page_height = Cm(29.7)
+        section.top_margin = Cm(1.0)
+        section.bottom_margin = Cm(2.5)
+        section.left_margin = Cm(3.0)
+        section.right_margin = Cm(2.0)
 
 
 def add_kop_surat(doc):
@@ -137,27 +157,24 @@ def add_metadata_surat(doc, context):
                 paragraph.paragraph_format.line_spacing = 1.0
 
     # Date cell explicitly right-aligned
-    table.cell(0, 3).paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    cell_date = table.cell(0, 3)
+    p_date = cell_date.paragraphs[0]
+    p_date.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p_date.paragraph_format.right_indent = Pt(0)
+
+    # Ensure zero right cell margin on date cell so text aligns flush with the right edge
+    tcPr = cell_date._tc.get_or_add_tcPr()
+    tcMar = OxmlElement('w:tcMar')
+    right_mar = OxmlElement('w:right')
+    right_mar.set(qn('w:w'), '0')
+    right_mar.set(qn('w:type'), 'dxa')
+    tcMar.append(right_mar)
+    tcPr.append(tcMar)
 
     # Apply 4pt space before the first row to create a precise gap below the header line
     for cell in table.rows[0].cells:
         for p in cell.paragraphs:
             p.paragraph_format.space_before = Pt(4)
-
-    p_gap_yth = doc.add_paragraph()
-    p_gap_yth.paragraph_format.space_after = Pt(0)
-    p_gap_yth.paragraph_format.space_before = Pt(0)
-    p_gap_yth.paragraph_format.line_spacing = 1.0
-
-    p_yth = doc.add_paragraph("Yth. " + context['yth'])
-    p_yth.paragraph_format.space_after = Pt(0)
-    p_yth.paragraph_format.space_before = Pt(0)
-    p_yth.paragraph_format.line_spacing = 1.0
-
-    p_di = doc.add_paragraph("di " + context['tempat_tujuan'])
-    p_di.paragraph_format.space_after = Pt(0)
-    p_di.paragraph_format.space_before = Pt(0)
-    p_di.paragraph_format.line_spacing = 1.0
 
 
 def add_dasar_penugasan(doc, dasar_text):
@@ -270,7 +287,8 @@ def add_closing_and_signature(doc, context):
 
     # --- TEMBUSAN LOGIC ---
     # Parse items and auto-detect count
-    items = [t.strip() for t in context['daftar_tembusan'].split('\n') if t.strip()]
+    raw_tembusan = context.get('daftar_tembusan') or context.get('tembusan') or ""
+    items = [t.strip() for t in raw_tembusan.split('\n') if t.strip()]
 
     # Smart helper for Hanging Indent Tembusan Items (Multiple)
     def add_tembusan_items(parent_doc, tembusan_list):
@@ -292,6 +310,8 @@ def add_closing_and_signature(doc, context):
             p.paragraph_format.line_spacing = 1.0
             p.add_run(f"{i}.\t{final_text}")
 
+    posisi = context.get('posisi_tembusan', 'Halaman 1 (Langsung)')
+
     if len(items) == 1:
         # RULE 8a: Single Item (Auto-detect)
         p_tembusan = doc.add_paragraph("Tembusan:")
@@ -309,7 +329,7 @@ def add_closing_and_signature(doc, context):
         p_item.paragraph_format.line_spacing = 1.0
 
     elif len(items) > 1:
-        if context['posisi_tembusan'] == "Halaman 1 (Langsung)":
+        if posisi == "Halaman 1 (Langsung)":
             # RULE 8b: Multiple Items on Page 1
             p_tembusan = doc.add_paragraph("Tembusan Yth.:")
             p_tembusan.paragraph_format.left_indent = Cm(0)
@@ -320,7 +340,7 @@ def add_closing_and_signature(doc, context):
 
             add_tembusan_items(doc, items)
 
-        elif context['posisi_tembusan'] == "Halaman 2 (Daftar Terlampir)":
+        elif posisi == "Halaman 2 (Daftar Terlampir)":
             # RULE 8c: Multiple Items on Page 2 (Header only on Page 1)
             p_tembusan = doc.add_paragraph("Tembusan Yth. (Daftar Terlampir)")
             p_tembusan.paragraph_format.left_indent = Cm(0)
@@ -337,16 +357,21 @@ def add_closing_and_signature(doc, context):
     p_hotline.paragraph_format.space_after = Pt(0)
     p_hotline.paragraph_format.line_spacing = 1.0
 
-    run_hl_title = p_hotline.add_run("Layanan Pengaduan/Hotline:\n")
-    run_hl_title.font.name = 'Arial'
-    run_hl_title.font.size = Pt(10)
+    run_1 = p_hotline.add_run("Layanan Pengaduan/")
+    run_1.font.name = 'Arial'
+    run_1.font.size = Pt(10)
 
-    run_hl_desc = p_hotline.add_run("Apabila Pegawai BPKP menerima/meminta gratifikasi dan/atau suap, dapat dilaporkan melalui mekanisme penyampaian pengaduan pada wbs.bpkp.go.id. atau menghubungi 081389101133.")
-    run_hl_desc.font.name = 'Arial'
-    run_hl_desc.font.size = Pt(10)
+    run_hotline = p_hotline.add_run("Hotline")
+    run_hotline.font.name = 'Arial'
+    run_hotline.font.size = Pt(10)
+    run_hotline.italic = True
+
+    run_2 = p_hotline.add_run(":\nApabila Pegawai BPKP menerima/meminta gratifikasi dan/atau suap, dapat dilaporkan melalui mekanisme penyampaian pengaduan pada wbs.bpkp.go.id. atau menghubungi 081389101133.")
+    run_2.font.name = 'Arial'
+    run_2.font.size = Pt(10)
 
     # --- PAGE 2 LAMPIRAN LOGIC (VIA HEADER) ---
-    if len(items) > 1 and context['posisi_tembusan'] == "Halaman 2 (Daftar Terlampir)":
+    if len(items) > 1 and posisi == "Halaman 2 (Daftar Terlampir)":
         # Add a new section (this automatically creates a Next Page Section Break)
         new_section = doc.add_section()
 
@@ -395,10 +420,318 @@ def add_closing_and_signature(doc, context):
         add_tembusan_items(doc, items)
 
 
-st.sidebar.title("🏠 TND Generator")
-menu = st.sidebar.radio("Pilih Naskah Dinas:", ["Surat Pengantar", "Laporan (Coming Soon)"])
+def add_tembusan(doc, context):
+    """Fallback helper for tembusan; formatting is integrated in add_closing_and_signature."""
+    pass
 
-if menu == "Surat Pengantar":
+
+def generate_sp2_doc(context):
+    doc = docx.Document()
+    set_document_margins(doc)
+
+    # Reuse perfected Kop and Metadata
+    add_kop_surat(doc)
+    add_metadata_surat(doc, context)
+
+    # Add Gap before Yth (Strict 1.0 spacing, 0pt before/after)
+    p_gap_yth = doc.add_paragraph()
+    p_gap_yth.paragraph_format.space_after = Pt(0)
+    p_gap_yth.paragraph_format.space_before = Pt(0)
+    p_gap_yth.paragraph_format.line_spacing = 1.0
+
+    # Add Yth.
+    p_yth = doc.add_paragraph(f"Yth. {context['yth']}")
+    p_yth.paragraph_format.left_indent = Cm(0)
+    p_yth.paragraph_format.space_after = Pt(0)
+    p_yth.paragraph_format.line_spacing = 1.0
+
+    # Add di Tempat
+    p_di = doc.add_paragraph(f"di {context['tempat_tujuan']}")
+    p_di.paragraph_format.left_indent = Cm(0)
+    p_di.paragraph_format.space_after = Pt(0)
+    p_di.paragraph_format.line_spacing = 1.0
+
+    # Add Gap before body
+    p_gap_body = doc.add_paragraph()
+    p_gap_body.paragraph_format.space_after = Pt(0)
+    p_gap_body.paragraph_format.space_before = Pt(0)
+    p_gap_body.paragraph_format.line_spacing = 1.0
+
+    # Paragraf 1
+    teks_paragraf_1 = (
+        f"Berdasarkan hasil pemantauan atas pelaksanaan tindak lanjut rekomendasi Laporan "
+        f"Nomor: {context['nomor_laporan']} tanggal {context['tanggal_laporan']} hal "
+        f"{context['hal_laporan']}, masih terdapat rekomendasi pada Organisasi Perangkat "
+        f"Daerah (OPD) terkait di lingkungan {context['nama_pemda']} yang belum kami terima "
+        f"dokumen/bukti tindak lanjutnya, sebagaimana terlampir."
+    )
+    p_par1 = doc.add_paragraph(teks_paragraf_1)
+    p_par1.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    p_par1.paragraph_format.left_indent = Cm(0)
+    p_par1.paragraph_format.right_indent = Cm(0)
+    p_par1.paragraph_format.first_line_indent = Cm(1.25)
+    p_par1.paragraph_format.space_before = Pt(0)
+    p_par1.paragraph_format.space_after = Pt(0)
+    p_par1.paragraph_format.line_spacing = 1.5
+
+    # Paragraf 2
+    teks_paragraf_2 = (
+        f"Sehubungan dengan hal tersebut, kami mengharapkan {context['sapaan_tujuan']} "
+        f"melakukan percepatan pelaksanaan tindak lanjut dimaksud. Bukti tindak lanjut "
+        f"disampaikan kepada Kepala Perwakilan BPKP Provinsi Papua pada kesempatan pertama. "
+        f"Untuk koordinasi lebih lanjut dapat menghubungi {context['sapaan_cp']} "
+        f"{context['nama_cp']} (HP: {context['no_hp_cp']})."
+    )
+    p_par2 = doc.add_paragraph(teks_paragraf_2)
+    p_par2.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    p_par2.paragraph_format.left_indent = Cm(0)
+    p_par2.paragraph_format.right_indent = Cm(0)
+    p_par2.paragraph_format.first_line_indent = Cm(1.25)
+    p_par2.paragraph_format.space_before = Pt(0)
+    p_par2.paragraph_format.space_after = Pt(0)
+    p_par2.paragraph_format.line_spacing = 1.5
+
+    # Paragraf 3 (Penutup)
+    teks_paragraf_3 = (
+        f"Atas perhatian dan kerja sama {context['sapaan_tujuan']}, kami mengucapkan terima kasih."
+    )
+    p_par3 = doc.add_paragraph(teks_paragraf_3)
+    p_par3.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    p_par3.paragraph_format.left_indent = Cm(0)
+    p_par3.paragraph_format.right_indent = Cm(0)
+    p_par3.paragraph_format.first_line_indent = Cm(1.25)
+    p_par3.paragraph_format.space_before = Pt(0)
+    p_par3.paragraph_format.space_after = Pt(0)
+    p_par3.paragraph_format.line_spacing = 1.5
+
+    # Re-use Signature and Tembusan modules from Surat Pengantar
+    add_closing_and_signature(doc, context)
+
+    if context.get('tembusan') and str(context['tembusan']).strip():
+        add_tembusan(doc, context)
+
+    # --- STEP 2: LAMPIRAN 1 (FORM TP3) ---
+    if context.get('file_tp3') is not None:
+        import fitz  # PyMuPDF
+        import io
+        from docx.enum.section import WD_SECTION
+        from docx.enum.text import WD_BREAK
+
+        # Create a new section for Lampiran to have a separate header
+        new_section = doc.add_section(WD_SECTION.NEW_PAGE)
+        new_section.header_distance = Cm(0.5)
+
+        # Access and unlink the header so it doesn't affect the main letter
+        header = new_section.header
+        header.is_linked_to_previous = False
+
+        # Clear any default empty paragraphs in the new header
+        for hp in header.paragraphs:
+            hp.text = ""
+
+        # Build the Lampiran Header text
+        p_lamp1 = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+        p_lamp1.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        p_lamp1.paragraph_format.left_indent = Cm(7.0)
+        p_lamp1.paragraph_format.space_before = Pt(0)
+        p_lamp1.paragraph_format.space_after = Pt(0)
+        p_lamp1.paragraph_format.line_spacing = 1.0
+
+        run_lamp1 = p_lamp1.add_run(
+            f"Lampiran 1\n"
+            f"Surat Kepala Perwakilan BPKP Provinsi Papua\n"
+            f"Nomor: {context['nomor_surat']}\n"
+            f"Tanggal: {context['tanggal_surat']}"
+        )
+        run_lamp1.font.name = 'Arial'
+        run_lamp1.font.size = Pt(12)
+
+        # Process PDF to images (this goes into the BODY of the new section)
+        pdf_bytes = context['file_tp3'].read()
+        pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+        for page_num in range(len(pdf_doc)):
+            page = pdf_doc.load_page(page_num)
+            pix = page.get_pixmap(dpi=200)
+            img_bytes = pix.tobytes("png")
+            img_stream = io.BytesIO(img_bytes)
+
+            p_img = doc.add_paragraph()
+            p_img.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p_img.paragraph_format.space_before = Pt(0)
+            p_img.paragraph_format.space_after = Pt(0)
+
+            run_img = p_img.add_run()
+            run_img.add_picture(img_stream, width=Cm(16.0))
+
+            # Add page break after each image EXCEPT the last one
+            if page_num < len(pdf_doc) - 1:
+                run_img.add_break(WD_BREAK.PAGE)
+
+    # --- STEP 3: LAMPIRAN 2 (TABEL REKOMENDASI LANDSCAPE) ---
+    from docx.enum.section import WD_SECTION, WD_ORIENT
+    from docx.oxml import OxmlElement, parse_xml
+    from docx.oxml.ns import qn, nsdecls
+
+    # 1. Create Landscape Section
+    section_lamp2 = doc.add_section(WD_SECTION.NEW_PAGE)
+    section_lamp2.orientation = WD_ORIENT.LANDSCAPE
+
+    # Swap dimensions for A4 Landscape
+    new_width, new_height = section_lamp2.page_height, section_lamp2.page_width
+    section_lamp2.page_width = new_width
+    section_lamp2.page_height = new_height
+    section_lamp2.header_distance = Cm(0.5)
+
+    # 1b. Force page numbering to restart at 1 for this section
+    sectPr = section_lamp2._sectPr
+    pgNumType = sectPr.find(qn('w:pgNumType'))
+    if pgNumType is None:
+        pgNumType = OxmlElement('w:pgNumType')
+        sectPr.append(pgNumType)
+    pgNumType.set(qn('w:start'), '1')
+
+    # 2. Setup Independent Header
+    header_lamp2 = section_lamp2.header
+    header_lamp2.is_linked_to_previous = False
+    for hp in header_lamp2.paragraphs:
+        hp.text = ""
+
+    p_head2 = header_lamp2.paragraphs[0] if header_lamp2.paragraphs else header_lamp2.add_paragraph()
+    p_head2.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p_head2.paragraph_format.left_indent = Cm(15.5)
+    p_head2.paragraph_format.space_before = Pt(0)
+    p_head2.paragraph_format.space_after = Pt(0)
+    p_head2.paragraph_format.line_spacing = 1.0
+
+    # Helper function to inject Word dynamic field codes
+    def add_field(run, field_type):
+        fldChar1 = OxmlElement('w:fldChar')
+        fldChar1.set(qn('w:fldCharType'), 'begin')
+        instrText = OxmlElement('w:instrText')
+        instrText.set(qn('xml:space'), 'preserve')
+        instrText.text = field_type
+        fldChar2 = OxmlElement('w:fldChar')
+        fldChar2.set(qn('w:fldCharType'), 'separate')
+        fldChar3 = OxmlElement('w:fldChar')
+        fldChar3.set(qn('w:fldCharType'), 'end')
+        run._r.append(fldChar1)
+        run._r.append(instrText)
+        run._r.append(fldChar2)
+        run._r.append(fldChar3)
+
+    # Build Header Text with dynamic numbering: "Lampiran 2 / [PAGE] - [SECTIONPAGES]"
+    run_h1 = p_head2.add_run("Lampiran 2 / ")
+    run_h1.font.name = 'Arial'
+    run_h1.font.size = Pt(12)
+
+    run_page = p_head2.add_run()
+    run_page.font.name = 'Arial'
+    run_page.font.size = Pt(12)
+    add_field(run_page, 'PAGE')
+
+    run_h2 = p_head2.add_run(" - ")
+    run_h2.font.name = 'Arial'
+    run_h2.font.size = Pt(12)
+
+    run_secpages = p_head2.add_run()
+    run_secpages.font.name = 'Arial'
+    run_secpages.font.size = Pt(12)
+    add_field(run_secpages, 'SECTIONPAGES')
+
+    run_h3 = p_head2.add_run(
+        f"\nSurat Kepala Perwakilan BPKP Provinsi Papua\n"
+        f"Nomor: {context['nomor_surat']}\n"
+        f"Tanggal: {context['tanggal_surat']}\n"
+    )
+    run_h3.font.name = 'Arial'
+    run_h3.font.size = Pt(12)
+
+    # 3. Add Document Title (Immediately after header setup, no spacer paragraph)
+    p_title = doc.add_paragraph("DAFTAR REKOMENDASI YANG BELUM DITINDAKLANJUTI")
+    p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_title.paragraph_format.space_before = Pt(0)
+    p_title.paragraph_format.space_after = Pt(12)
+    run_title = p_title.runs[0]
+    run_title.font.name = 'Arial'
+    run_title.font.size = Pt(12)
+    run_title.bold = True
+
+    # Prepare Data from DataFrame
+    import pandas as pd
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn, nsdecls
+    from docx.oxml import parse_xml
+
+    df = context.get('df_rekom')
+
+    # Filter out rows that are entirely empty or just whitespace securely
+    if df is not None and not df.empty:
+        # Replace empty strings or whitespace-only strings with None, then drop rows where all columns are None
+        df = df.replace(r'^\s*$', None, regex=True).dropna(how='all')
+
+    num_data_rows = len(df) if (df is not None and not df.empty) else 4
+    total_rows = num_data_rows + 1
+
+    # 4. Create the Table
+    table = doc.add_table(rows=total_rows, cols=4)
+    table.style = 'Table Grid'
+
+    widths = [Cm(1.5), Cm(7.5), Cm(7.5), Cm(8.2)]
+    for row in table.rows:
+        for idx, width in enumerate(widths):
+            row.cells[idx].width = width
+
+    # 5. Format Header Row & Set Repeat Header XML
+    headers = ["No.", "Kondisi", "Penyebab", "Rekomendasi yang Belum Ditindaklanjuti"]
+    for idx, text in enumerate(headers):
+        cell = table.cell(0, idx)
+        cell.text = text
+
+        shading_elm = parse_xml(r'<w:shd {} w:fill="D9D9D9"/>'.format(nsdecls('w')))
+        cell._tc.get_or_add_tcPr().append(shading_elm)
+
+        p = cell.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.line_spacing = 1.15
+        run = p.runs[0]
+        run.font.name = 'Arial'
+        run.font.size = Pt(12)
+        run.font.bold = True
+
+    # Inject XML to Repeat Header Row
+    tr = table.rows[0]._tr
+    trPr = tr.get_or_add_trPr()
+    tblHeader = OxmlElement('w:tblHeader')
+    tblHeader.set(qn('w:val'), 'true')
+    trPr.append(tblHeader)
+
+    # 6. Format Body Rows and Inject Data
+    for r_idx in range(1, total_rows):
+        # Extract data securely
+        if df is not None and not df.empty and (r_idx - 1) < len(df):
+            row_data = df.iloc[r_idx - 1]
+            val_kondisi = str(row_data.get('Kondisi', '')) if pd.notna(row_data.get('Kondisi')) else ""
+            val_penyebab = str(row_data.get('Penyebab', '')) if pd.notna(row_data.get('Penyebab')) else ""
+            val_rekom = str(row_data.get('Rekomendasi yang Belum Ditindaklanjuti', '')) if pd.notna(row_data.get('Rekomendasi yang Belum Ditindaklanjuti')) else ""
+        else:
+            val_kondisi, val_penyebab, val_rekom = "", "", ""
+
+        cols_text = [f"{r_idx}.", val_kondisi, val_penyebab, val_rekom]
+
+        for c_idx in range(4):
+            cell = table.cell(r_idx, c_idx)
+            p = cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.line_spacing = 1.15
+            run = p.add_run(cols_text[c_idx])
+            run.font.name = 'Arial'
+            run.font.size = Pt(12)
+
+    return doc
+
+
+def render_surat_pengantar():
     st.title("Drafting Surat Pengantar")
 
     # Build the Form
@@ -410,6 +743,7 @@ if menu == "Surat Pengantar":
             lampiran = st.text_input("Lampiran", value="")
             hal = st.text_input("Hal", value="")
             tanggal_surat_input = st.date_input("Tanggal Dokumen", datetime.date.today())
+            is_draft = st.checkbox("Simpan sebagai Draft (Tanggal Kosong)", value=False)
 
         with col2:
             yth = st.text_input("Yth.", value="")
@@ -456,7 +790,7 @@ if menu == "Surat Pengantar":
 
             context = {
                 'nomor_surat': nomor_surat,
-                'tanggal_surat': format_tgl_indo(tanggal_surat_input),
+                'tanggal_surat': format_tgl_indo(tanggal_surat_input, is_draft),
                 'lampiran': lampiran,
                 'hal': hal,
                 'yth': yth,
@@ -489,23 +823,28 @@ if menu == "Surat Pengantar":
                 )
 
             doc = docx.Document()
-
-            # Global font: Arial 12
-            style = doc.styles["Normal"]
-            style.font.name = "Arial"
-            style.font.size = Pt(12)
-
-            # Page setup: A4 + margins
-            for section in doc.sections:
-                section.page_width = Cm(21.0)
-                section.page_height = Cm(29.7)
-                section.top_margin = Cm(1.0)
-                section.bottom_margin = Cm(2.5)
-                section.left_margin = Cm(3.0)
-                section.right_margin = Cm(2.0)
+            set_document_margins(doc)
 
             add_kop_surat(doc)
             add_metadata_surat(doc, context)
+
+            # Add Gap before Yth
+            p_gap_yth = doc.add_paragraph()
+            p_gap_yth.paragraph_format.space_after = Pt(0)
+            p_gap_yth.paragraph_format.space_before = Pt(0)
+            p_gap_yth.paragraph_format.line_spacing = 1.0
+
+            # Add Yth.
+            p_yth = doc.add_paragraph(f"Yth. {context['yth']}")
+            p_yth.paragraph_format.left_indent = Cm(0)
+            p_yth.paragraph_format.space_after = Pt(0)
+            p_yth.paragraph_format.line_spacing = 1.0
+
+            # Add di Tempat
+            p_di = doc.add_paragraph(f"di {context['tempat_tujuan']}")
+            p_di.paragraph_format.left_indent = Cm(0)
+            p_di.paragraph_format.space_after = Pt(0)
+            p_di.paragraph_format.line_spacing = 1.0
 
             # Gap before Berdasarkan
             p_gap_dasar = doc.add_paragraph()
@@ -531,6 +870,126 @@ if menu == "Surat Pengantar":
 
             st.success("✅ Naskah Dinas berhasil dibuat! Silakan klik tombol di atas untuk mengunduh.")
 
-elif menu == "Laporan (Coming Soon)":
-    st.title("Generator Laporan")
-    st.info("Modul Laporan masih dalam tahap pengembangan. Nantikan *update* selanjutnya!")
+
+def render_sp2():
+    st.title("Generator Surat Penegasan (SP2)")
+
+    # 1. MAIN METADATA FORM
+    with st.form("sp2_form"):
+        st.subheader("Data Naskah Dinas (SP2)")
+        col1, col2 = st.columns(2)
+        with col1:
+            nomor_surat = st.text_input("Nomor Surat", value="")
+            lampiran = st.text_input("Lampiran", value="")
+            tanggal_surat_input = st.date_input("Tanggal Dokumen", datetime.date.today())
+            is_draft = st.checkbox("Simpan sebagai Draft (Tanggal Kosong)", value=False, key="draft_sp2")
+
+        with col2:
+            yth = st.text_input("Yth.", value="")
+            tempat_tujuan = st.text_input("Kota Tujuan (di)", value="")
+
+        st.subheader("Data Laporan Sebelumnya (Paragraf 1)")
+        col3, col4 = st.columns(2)
+        with col3:
+            nomor_laporan = st.text_input("Nomor Laporan", value="")
+            tanggal_laporan_input = st.date_input("Tanggal Laporan", datetime.date.today(), key="tgl_lap")
+        with col4:
+            hal_laporan = st.text_input("Hal Laporan", value="")
+            nama_pemda = st.text_input("Nama Pemda/Lingkungan", value="")
+
+        st.subheader("Data Tindak Lanjut & Kontak (Paragraf 2)")
+        col5, col6 = st.columns(2)
+        with col5:
+            sapaan_tujuan = st.selectbox("Sapaan Tujuan", ["Bapak", "Ibu"])
+            sapaan_cp = st.selectbox("Sapaan Contact Person", ["Sdr.", "Sdri."])
+        with col6:
+            nama_cp = st.text_input("Nama Contact Person", value="")
+            no_hp_cp = st.text_input("Nomor HP CP", value="")
+
+        st.subheader("Penandatangan & Tembusan")
+        col7, col8 = st.columns(2)
+        with col7:
+            jabatan_ttd = st.text_input("Jabatan Penandatangan", value="")
+            nama_ttd = st.text_input("Nama Penandatangan", value="")
+            tembusan = st.text_area("Tembusan (pisahkan per baris dengan Enter)", value="")
+        with col8:
+            checker_tte = st.checkbox("Gunakan Tanda Tangan Elektronik (TTE)", value=True, key="tte_sp2")
+
+        st.subheader("Upload Form TP3 (Untuk Lampiran 1)")
+        file_tp3 = st.file_uploader("Upload PDF Form TP3 (Opsional)", type=["pdf"], key="tp3_upload")
+
+        submit_sp2 = st.form_submit_button("Generate SP2")
+
+    # 2. LAMPIRAN 2 UI (OUTSIDE & BELOW FORM)
+    st.subheader("Data Rekomendasi (Lampiran 2)")
+    metode_lampiran2 = st.radio("Metode Pengisian Tabel:", ["Input Langsung via Web", "Generate Tabel Kosong (Isi manual di Word)"])
+
+    df_to_pass = None
+    if metode_lampiran2 == "Input Langsung via Web":
+        st.caption("Ketik langsung atau Paste dari Excel. Kolom 'No.' akan terisi otomatis di dokumen.")
+        import pandas as pd
+        if "df_rekom" not in st.session_state:
+            st.session_state.df_rekom = pd.DataFrame(
+                columns=["Kondisi", "Penyebab", "Rekomendasi yang Belum Ditindaklanjuti"],
+                data=[["", "", ""]]
+            )
+
+        df_to_pass = st.data_editor(
+            st.session_state.df_rekom,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="data_editor_rekom"
+        )
+
+    if submit_sp2:
+        # Mapping to standard context dictionary
+        context = {
+            'nomor_surat': nomor_surat,
+            'lampiran': lampiran,
+            'hal': "Penegasan Kedua atas Rekomendasi Pengawasan yang Belum Ditindaklanjuti",
+            'tanggal_surat': format_tgl_indo(tanggal_surat_input, is_draft),
+            'yth': yth,
+            'tempat_tujuan': tempat_tujuan,
+            'nomor_laporan': nomor_laporan,
+            'tanggal_laporan': format_tgl_indo(tanggal_laporan_input, False),
+            'hal_laporan': hal_laporan,
+            'nama_pemda': nama_pemda,
+            'sapaan_tujuan': sapaan_tujuan,
+            'sapaan_cp': sapaan_cp,
+            'nama_cp': nama_cp,
+            'no_hp_cp': no_hp_cp,
+            'jabatan_ttd': jabatan_ttd,
+            'nama_ttd': nama_ttd,
+            'use_tte': checker_tte,
+            'tembusan': tembusan,
+            'file_tp3': file_tp3,
+            'df_rekom': df_to_pass
+        }
+
+        # Generate the document
+        doc = generate_sp2_doc(context)
+
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+            preview_path = tmp.name
+            doc.save(preview_path)
+
+        with open(preview_path, "rb") as docx_file:
+            st.download_button(
+                label="📥 Download Draft SP2",
+                data=docx_file,
+                file_name="Draft_SP2.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+        st.success("✅ Fondasi SP2 berhasil dibuat!")
+
+
+st.sidebar.title("Navigasi TND")
+modul_pilihan = st.sidebar.selectbox("Pilih Modul Naskah Dinas:", ["Surat Pengantar", "Surat Penegasan (SP2)"])
+
+if modul_pilihan == "Surat Pengantar":
+    render_surat_pengantar()
+elif modul_pilihan == "Surat Penegasan (SP2)":
+    render_sp2()
+

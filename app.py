@@ -36,6 +36,10 @@ if "user_email" not in st.session_state:
 if "code" in st.query_params and st.session_state.user_email is None:
     code = st.query_params["code"]
     try:
+        # SUNTIKKAN KEMBALI CODE VERIFIER DARI SESSION STATE
+        if "code_verifier" in st.session_state:
+            flow.code_verifier = st.session_state.code_verifier
+
         flow.fetch_token(code=code)
         credentials = flow.credentials
 
@@ -58,7 +62,10 @@ if st.session_state.user_email is None:
     st.title("Portal TND BPKP Papua")
     st.warning("Aplikasi ini dilindungi. Silakan login menggunakan email BPKP yang terdaftar.")
 
-    auth_url, _ = flow.authorization_url(prompt='consent')
+    # GENERATE URL DAN SIMPAN CODE VERIFIER (PKCE) KE SESSION STATE
+    auth_url, state = flow.authorization_url(prompt='consent')
+    st.session_state.code_verifier = flow.code_verifier
+
     st.link_button("Login with Google", auth_url)
 
 else:

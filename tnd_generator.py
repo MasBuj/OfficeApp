@@ -511,47 +511,51 @@ def generate_sp2_doc(context):
         add_tembusan(doc, context)
 
     # --- STEP 2: LAMPIRAN 1 (FORM TP3) ---
+    from docx.enum.section import WD_SECTION
+
+    # Create a new section for Lampiran 1 to have a separate header
+    section_lamp1 = doc.add_section(WD_SECTION.NEW_PAGE)
+    section_lamp1.header_distance = Cm(0.5)
+
+    # Access and unlink the header so it doesn't affect the main letter
+    header_lamp1 = section_lamp1.header
+    header_lamp1.is_linked_to_previous = False
+
+    # Clear any default empty paragraphs in the new header
+    for hp in header_lamp1.paragraphs:
+        hp.text = ""
+
+    # Build the Lampiran Header text
+    p_lamp1 = header_lamp1.paragraphs[0] if header_lamp1.paragraphs else header_lamp1.add_paragraph()
+    p_lamp1.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p_lamp1.paragraph_format.left_indent = Cm(7.0)
+    p_lamp1.paragraph_format.space_before = Pt(0)
+    p_lamp1.paragraph_format.space_after = Pt(0)
+    p_lamp1.paragraph_format.line_spacing = 1.0
+
+    run_lamp1 = p_lamp1.add_run(
+        f"Lampiran 1\n"
+        f"Surat Kepala Perwakilan BPKP Provinsi Papua\n"
+        f"Nomor: {context['nomor_surat']}\n"
+        f"Tanggal: {context['tanggal_surat']}"
+    )
+    run_lamp1.font.name = 'Arial'
+    run_lamp1.font.size = Pt(12)
+
+    # Process Form TP3 if uploaded (extract ONLY page 1) or leave blank placeholder
     if context.get('file_tp3') is not None:
         import fitz  # PyMuPDF
         import io
-        from docx.enum.section import WD_SECTION
-        from docx.enum.text import WD_BREAK
 
-        # Create a new section for Lampiran to have a separate header
-        new_section = doc.add_section(WD_SECTION.NEW_PAGE)
-        new_section.header_distance = Cm(0.5)
-
-        # Access and unlink the header so it doesn't affect the main letter
-        header = new_section.header
-        header.is_linked_to_previous = False
-
-        # Clear any default empty paragraphs in the new header
-        for hp in header.paragraphs:
-            hp.text = ""
-
-        # Build the Lampiran Header text
-        p_lamp1 = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
-        p_lamp1.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        p_lamp1.paragraph_format.left_indent = Cm(7.0)
-        p_lamp1.paragraph_format.space_before = Pt(0)
-        p_lamp1.paragraph_format.space_after = Pt(0)
-        p_lamp1.paragraph_format.line_spacing = 1.0
-
-        run_lamp1 = p_lamp1.add_run(
-            f"Lampiran 1\n"
-            f"Surat Kepala Perwakilan BPKP Provinsi Papua\n"
-            f"Nomor: {context['nomor_surat']}\n"
-            f"Tanggal: {context['tanggal_surat']}"
-        )
-        run_lamp1.font.name = 'Arial'
-        run_lamp1.font.size = Pt(12)
-
-        # Process PDF to images (this goes into the BODY of the new section)
-        pdf_bytes = context['file_tp3'].read()
+        file_tp3 = context['file_tp3']
+        if hasattr(file_tp3, 'seek'):
+            file_tp3.seek(0)
+        pdf_bytes = file_tp3.read() if hasattr(file_tp3, 'read') else file_tp3.getvalue()
         pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-        for page_num in range(len(pdf_doc)):
-            page = pdf_doc.load_page(page_num)
+        if len(pdf_doc) > 0:
+            # ONLY extract and insert the first page (page 1)
+            page = pdf_doc.load_page(0)
             pix = page.get_pixmap(dpi=200)
             img_bytes = pix.tobytes("png")
             img_stream = io.BytesIO(img_bytes)
@@ -563,10 +567,15 @@ def generate_sp2_doc(context):
 
             run_img = p_img.add_run()
             run_img.add_picture(img_stream, width=Cm(16.0))
-
-            # Add page break after each image EXCEPT the last one
-            if page_num < len(pdf_doc) - 1:
-                run_img.add_break(WD_BREAK.PAGE)
+        else:
+            p_blank = doc.add_paragraph()
+            p_blank.paragraph_format.space_before = Pt(0)
+            p_blank.paragraph_format.space_after = Pt(0)
+    else:
+        # If no file uploaded, leave the rest of the page blank as a placeholder
+        p_blank = doc.add_paragraph()
+        p_blank.paragraph_format.space_before = Pt(0)
+        p_blank.paragraph_format.space_after = Pt(0)
 
     # --- STEP 3: LAMPIRAN 2 (TABEL REKOMENDASI LANDSCAPE) ---
     from docx.enum.section import WD_SECTION, WD_ORIENT
